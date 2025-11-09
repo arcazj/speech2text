@@ -4,7 +4,7 @@
 
 ## 🚀 Live Demo
 
-**▶️ [Open the LIVE DEMO](https://arcazj.github.io/YOUR_REPO/speech2text_chatGPT_web_based.html)**
+**▶️ [Open the LIVE DEMO](https://arcazj.github.io/speech2text/index.html)**
 
 
 ---
