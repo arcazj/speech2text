@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>English Pronunciation Trainer (Single-File Web)</title>
+    <style>
+        :root {
+            --bg: #0f1115;
+            --panel: #161a21;
+            --text: #e6e6e6;
+            --muted: #b9c0cf;
+            --blue: #3b82f6;
+            --blue-2: #2563eb;
+            --accent-good: #34c759;
+            --accent-warn: #ffcc00;
+            --accent-bad:  #ff3b30;
+            --cyan: #5ac8fa;
+            --yellow: #ffcc00;
+            --border: #202634;
+        }
+        * { box-sizing: border-box; }
+        html, body { height: 100%; }
+        body {
+            margin: 0; background: var(--bg); color: var(--text);
+            font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+        }
+        .app {
+            min-width: 1000px; min-height: 800px;
+            height: 100vh; display: grid; grid-template-columns: 1fr 1fr; gap: 16px;
+            padding: 16px;
+        }
+        .panel {
+            background: linear-gradient(180deg, #151922, #11141b);
+            border: 1px solid var(--border);
+            border-radius: 14px; padding: 16px; display: grid; grid-template-rows: auto auto 1fr auto; gap: 12px;
+        }
+        h2 { margin: 0 0 8px 0; font-size: 18px; font-weight: 700; color: #dfe6f7; }
+        .row { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+        button {
+            appearance: none; border: 1px solid #1e2636; background: linear-gradient(180deg, var(--blue), var(--blue-2));
+            color: white; padding: 10px 12px; border-radius: 10px; font-weight: 600; cursor: pointer;
+            box-shadow: 0 8px 20px rgba(37, 99, 235, .25);
+        }
+        button:disabled { opacity: .5; cursor: not-allowed; }
+        .textbox, .smallbox {
+            background: #131721; border: 1px solid var(--border); color: var(--text);
+            border-radius: 10px; padding: 12px; width: 100%; resize: none;
+            font: inherit; line-height: 1.4;
+        }
+        .textbox { height: 100%; }
+        .smallbox { height: 64px; }
+        .status {
+            padding: 8px 10px; color: var(--muted); border-top: 1px dashed var(--border); font-size: 13px;
+        }
+        /* Right panel bits */
+        .block { background: #121622; border: 1px solid var(--border); border-radius: 12px; padding: 12px; }
+        .block + .block { margin-top: 10px; }
+        .label { color: var(--muted); font-size: 13px; margin-bottom: 4px; }
+        .gauge {
+            height: 10px; width: 100%; background: #0f1320; border:1px solid var(--border);
+            border-radius: 999px; overflow: hidden;
+        }
+        .gauge > .fill { height: 100%; width: 0%; background: var(--accent-bad); transition: width .25s ease, background .25s ease; }
+        .gauge-val { font-size: 13px; color: var(--muted); margin-top: 6px; }
+        #rhythmBox {
+            background: #0f1320; border: 1px solid var(--border); border-radius: 10px;
+            padding: 12px; height: 100%; overflow: auto; line-height: 1.5;
+            font-size: 14px; white-space: pre-wrap;
+        }
+        .content { font-weight: 700; color: #ffffff; }
+        .function { color: #d0d0d0; }
+        .arrow-rise { color: var(--cyan); font-weight: 800; }
+        .arrow-fall { color: var(--yellow); font-weight: 800; }
+        .muted { color: var(--muted); }
+        .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+        .hint { font-size: 12px; color: var(--muted); }
+    </style>
+</head>
+<body>
+<div class="app">
+    <!-- Left -->
+    <section class="panel">
+        <div><h2>Controls & Transcription</h2></div>
+        <div class="row">
+            <button id="btnRecord">🎙 Start Recording</button>
+            <button id="btnPlayback" disabled>🔊 Playback Recording</button>
+            <button id="btnClear">🧹 Clear</button>
+        </div>
+        <textarea id="transcript" class="textbox" readonly>Transcript will appear here…</textarea>
+        <div id="status" class="status">Ready.</div>
+    </section>
+
+    <!-- Right -->
+    <section class="panel" style="grid-template-rows:auto auto auto 1fr;">
+        <div><h2>Analysis</h2></div>
+
+        <div class="block">
+            <div class="label">Accuracy (Confidence)</div>
+            <div class="gauge"><div id="gaugeFill" class="fill"></div></div>
+            <div id="gaugeVal" class="gauge-val">N/A</div>
+        </div>
+
+        <div class="block">
+            <div class="label">IPA Transcription</div>
+            <textarea id="ipaBox" class="smallbox" readonly>(IPA will appear here)</textarea>
+        </div>
+
+        <div class="block" style="height:100%; display:grid; grid-template-rows:auto 1fr;">
+            <div class="label">Target Rhythm &amp; Intonation</div>
+            <div id="rhythmBox"></div>
+            <div class="hint">Content words are UPPERCASE (bold). Yes/No questions end with ↗; others with ↘.</div>
+        </div>
+    </section>
+</div>
+
+<script>
+    (() => {
+        // --- Elements
+        const btnRecord   = document.getElementById('btnRecord');
+        const btnPlayback = document.getElementById('btnPlayback');
+        const btnClear    = document.getElementById('btnClear');
+        const transcript  = document.getElementById('transcript');
+        const statusEl    = document.getElementById('status');
+        const gaugeFill   = document.getElementById('gaugeFill');
+        const gaugeVal    = document.getElementById('gaugeVal');
+        const ipaBox      = document.getElementById('ipaBox');
+        const rhythmBox   = document.getElementById('rhythmBox');
+
+        // --- State
+        let recognition = null;
+        let collecting  = false;
+        let collectedText = '';
+        let bestConfidence = null;
+        let inactivityTimer = null;
+        const PAUSE_SECONDS = 2.5;
+
+        // --- Function words (lowercase)
+        const FUNCTION_WORDS = new Set(`
+a an the and but or so for nor of at by from with without within into onto to up down over under on in out as is am are was were be been being
+do does did have has had will would should could can may might must
+than then there here this that these those not no yes if also very just only maybe perhaps really about across after again against all almost already although always among around because before below between both each either enough ever every few fewer first former further who whom whose which what when where why how
+i me my mine myself you your yours yourself he him his himself she her hers herself it its itself we us our ours ourselves they them their theirs themselves
+`.trim().split(/\s+/));
+
+        const AUX_STARTERS = new Set(['is','are','am','was','were','do','does','did','have','has','had','can','could','will','would','shall','should','may','might','must']);
+
+        // --- Minimal IPA helper (demo-grade)
+        const IPA_DICT = {
+            'the':'ðə', 'a':'ə', 'an':'æn', 'to':'tuː', 'of':'ʌv', 'and':'ænd',
+            'you':'juː', 'is':'ɪz', 'are':'ɑːr', 'i':'aɪ', 'it':'ɪt', 'this':'ðɪs',
+            'that':'ðæt', 'in':'ɪn', 'on':'ɒn', 'for':'fɔːr', 'with':'wɪð', 'have':'hæv',
+            'do':'duː', 'be':'biː', 'yes':'jɛs', 'no':'nəʊ'
+        };
+        function toIPA(text) {
+            const words = text.split(/(\b)/);
+            return words.map(w => {
+                const lw = w.toLowerCase();
+                if (/^[a-z']+$/i.test(w)) {
+                    if (IPA_DICT[lw]) return IPA_DICT[lw];
+                    // extremely naive fallback (demo): replace some digraphs
+                    return w
+                        .toLowerCase()
+                        .replace(/th/g, 'ð')
+                        .replace(/sh/g, 'ʃ')
+                        .replace(/ch/g, 'tʃ')
+                        .replace(/ph/g, 'f')
+                        .replace(/oo/g, 'uː')
+                        .replace(/ee/g, 'iː')
+                        .replace(/ar/g, 'ɑːr');
+                }
+                return w;
+            }).join('');
+        }
+
+        // --- Sentence utilities
+        function splitIntoSentences(text) {
+            const parts = text.split(/([.?!])/);
+            const out = [];
+            for (let i=0; i<parts.length; i+=2) {
+                const core = (parts[i] || '').trim();
+                const end = parts[i+1] || '';
+                const s = (core + end).trim();
+                if (s) out.push(s);
+            }
+            return out;
+        }
+        function isYesNoQuestion(s) {
+            const t = s.trim();
+            if (t.endsWith('?')) return true;
+            const words = (t.match(/[A-Za-z']+/g) || []).map(x=>x.toLowerCase());
+            return words.length && AUX_STARTERS.has(words[0]);
+        }
+        function rhythmTransform(sentence) {
+            const tokens = sentence.match(/[A-Za-z']+|[^A-Za-z'\s]+|\s+/g) || [];
+            return tokens.map(tok => {
+                if (/^[A-Za-z']+$/.test(tok)) {
+                    const lw = tok.toLowerCase();
+                    if (FUNCTION_WORDS.has(lw)) return lw;        // keep function words lowercase
+                    return tok.toUpperCase();                     // stress content words
+                }
+                return tok;
+            }).join('');
+        }
+
+        // --- Gauge
+        function setConfidence(conf) {
+            if (conf == null) {
+                gaugeFill.style.width = '0%';
+                gaugeFill.style.background = '#808080';
+                gaugeVal.textContent = 'N/A';
+                return;
+            }
+            const pct = Math.max(0, Math.min(1, conf)) * 100;
+            let color = 'var(--accent-bad)';
+            if (pct >= 85) color = 'var(--accent-good)';
+            else if (pct >= 65) color = 'var(--accent-warn)';
+            gaugeFill.style.width = pct.toFixed(1) + '%';
+            gaugeFill.style.background = color;
+            gaugeVal.textContent = pct.toFixed(1) + '%';
+        }
+
+        // --- Rhythm box rendering
+        function renderRhythm(text) {
+            rhythmBox.innerHTML = '';
+            if (!text.trim()) { rhythmBox.textContent = '(no speech)'; return; }
+            const sentences = splitIntoSentences(text);
+            sentences.forEach((s, i) => {
+                const stressed = rhythmTransform(s);
+                const yn = isYesNoQuestion(s);
+                const arrowSpan = document.createElement('span');
+                arrowSpan.className = yn ? 'arrow-rise' : 'arrow-fall';
+                arrowSpan.textContent = yn ? ' ↗' : ' ↘';
+
+                // Tokenize to tag content/function words
+                const line = document.createElement('div');
+                const tokens = stressed.match(/[A-Za-z']+|[^A-Za-z'\s]+|\s+/g) || [];
+                tokens.forEach(t => {
+                    if (/^[A-Za-z']+$/.test(t)) {
+                        const span = document.createElement('span');
+                        if (t === t.toUpperCase()) { span.className = 'content'; span.textContent = t; }
+                        else { span.className = 'function'; span.textContent = t; }
+                        line.appendChild(span);
+                    } else {
+                        line.appendChild(document.createTextNode(t));
+                    }
+                });
+                line.appendChild(arrowSpan);
+                rhythmBox.appendChild(line);
+                if (i < sentences.length - 1) rhythmBox.appendChild(document.createTextNode('\n'));
+            });
+        }
+
+        // --- Recording & Transcription via Web Speech API
+        function startRecognition() {
+            const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+            if (!SR) {
+                setStatus('Your browser does not support the Web Speech API (try Chrome/Edge).');
+                return;
+            }
+            if (collecting) return;
+
+            recognition = new SR();
+            recognition.lang = 'en-US';
+            recognition.interimResults = true;   // stream partials
+            recognition.continuous = true;       // keep audio stream alive
+            collectedText = '';
+            bestConfidence = null;
+            setConfidence(null);
+            transcript.value = 'Listening… (pause for ~2.5s to stop)';
+
+            setStatus('Listening…');
+            collecting = true;
+            btnRecord.disabled = true;
+            btnPlayback.disabled = true;
+
+            const resetWatchdog = () => {
+                if (inactivityTimer) clearTimeout(inactivityTimer);
+                inactivityTimer = setTimeout(() => {
+                    // 2.5s of inactivity → stop
+                    try { recognition.stop(); } catch {}
+                }, PAUSE_SECONDS * 1000);
+            };
+
+            recognition.onstart = () => resetWatchdog();
+            recognition.onaudiostart = () => resetWatchdog();
+            recognition.onsoundstart = () => resetWatchdog();
+            recognition.onspeechstart = () => resetWatchdog();
+
+            recognition.onresult = (event) => {
+                resetWatchdog();
+                let interim = '';
+                for (let i = event.resultIndex; i < event.results.length; i++) {
+                    const res = event.results[i];
+                    const txt = res[0].transcript;
+                    if (res.isFinal) {
+                        collectedText += (collectedText ? ' ' : '') + txt.trim();
+                        const conf = typeof res[0].confidence === 'number' ? res[0].confidence : null;
+                        if (conf != null) {
+                            // keep the first available confidence (or max)
+                            bestConfidence = bestConfidence == null ? conf : Math.max(bestConfidence, conf);
+                        }
+                    } else {
+                        interim += txt;
+                    }
+                }
+                transcript.value = (collectedText + (interim ? ' ' + interim : '')).trim();
+            };
+
+            recognition.onerror = (e) => {
+                setStatus('ASR error: ' + (e.error || e.message || e.toString()));
+                stopFinalize();
+            };
+
+            recognition.onend = () => {
+                // If we ended not by explicit error, finalize normally
+                stopFinalize();
+            };
+
+            try { recognition.start(); } catch (e) {
+                setStatus('Could not start recognition: ' + e);
+                collecting = false;
+                btnRecord.disabled = false;
+            }
+
+            function stopFinalize() {
+                if (!collecting) return;
+                collecting = false;
+                if (inactivityTimer) clearTimeout(inactivityTimer);
+
+                transcript.value = collectedText || '(no speech)';
+                setStatus('Transcription complete.');
+                btnRecord.disabled = false;
+                btnPlayback.disabled = !collectedText;
+
+                // Update analysis
+                setConfidence(bestConfidence);
+                ipaBox.value = collectedText ? toIPA(collectedText) : '(IPA unavailable)';
+                renderRhythm(collectedText);
+            }
+        }
+
+        // --- Playback via speechSynthesis
+        function playback() {
+            const txt = (transcript.value || '').trim();
+            if (!txt) return;
+            setStatus('Playing back slowly…');
+            btnPlayback.disabled = true;
+
+            const utt = new SpeechSynthesisUtterance(txt);
+            // Approximate ~140 wpm (browser units vary): 0.85 feels close in Chrome
+            utt.rate = 0.85;
+            utt.onend = () => { setStatus('Playback complete.'); btnPlayback.disabled = false; };
+            utt.onerror = (e) => { setStatus('TTS error: ' + (e.error || e.message || e)); btnPlayback.disabled = false; };
+            window.speechSynthesis.cancel(); // fresh start each time
+            window.speechSynthesis.speak(utt);
+        }
+
+        // --- Helpers
+        function setStatus(msg) { statusEl.textContent = msg; }
+
+        function clearAll() {
+            collectedText = '';
+            bestConfidence = null;
+            transcript.value = '(cleared)';
+            ipaBox.value = '(cleared)';
+            rhythmBox.textContent = '(cleared)';
+            setConfidence(null);
+            setStatus('Cleared.');
+            btnPlayback.disabled = true;
+        }
+
+        // --- Wire up
+        btnRecord.addEventListener('click', startRecognition);
+        btnPlayback.addEventListener('click', playback);
+        btnClear.addEventListener('click', clearAll);
+
+        // Initial render
+        setConfidence(null);
+    })();
+</script>
+</body>
+</html>
