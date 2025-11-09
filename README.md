@@ -6,9 +6,6 @@
 
 **▶️ [Open the LIVE DEMO](https://arcazj.github.io/YOUR_REPO/speech2text_chatGPT_web_based.html)**
 
-> Replace `YOUR_USERNAME` and `YOUR_REPO` with your GitHub info.
-> To host: enable **GitHub Pages** → *Settings* → *Pages* → **Deploy from a branch** (e.g., `main` / `/root`) and place `speech2text_chatGPT_web_based.html` at the repo root.
-
 ---
 
 ## Overview
