@@ -191,7 +191,7 @@ Build a self-contained HTML file that recreates the features entirely in the bro
 
 ## License
 
-MIT © YOUR_NAME
+MIT © arcazj
 See [`LICENSE`](LICENSE) for details.
 
 ---
