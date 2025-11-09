@@ -53,10 +53,9 @@
         .status {
             padding: 8px 10px; color: var(--muted); border-top: 1px dashed var(--border); font-size: 13px;
         }
-        /* Right panel bits */
         .block { background: #121622; border: 1px solid var(--border); border-radius: 12px; padding: 12px; }
         .block + .block { margin-top: 10px; }
-        .label { color: var(--muted); font-size: 13px; margin-bottom: 4px; }
+        .label { color: var(--muted); font-size: 13px; margin-bottom: 4px; display: flex; align-items: baseline; gap: 8px; }
         .gauge {
             height: 10px; width: 100%; background: #0f1320; border:1px solid var(--border);
             border-radius: 999px; overflow: hidden;
@@ -72,8 +71,6 @@
         .function { color: #d0d0d0; }
         .arrow-rise { color: var(--cyan); font-weight: 800; }
         .arrow-fall { color: var(--yellow); font-weight: 800; }
-        .muted { color: var(--muted); }
-        .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
         .hint { font-size: 12px; color: var(--muted); }
     </style>
 </head>
@@ -96,9 +93,13 @@
         <div><h2>Analysis</h2></div>
 
         <div class="block">
-            <div class="label">Accuracy (Confidence)</div>
+            <div class="label">
+                <span>Accuracy (Confidence)</span>
+                <span id="confidenceBadge" class="hint"></span>
+            </div>
             <div class="gauge"><div id="gaugeFill" class="fill"></div></div>
             <div id="gaugeVal" class="gauge-val">N/A</div>
+            <div id="confWarn" class="hint" style="margin-top:8px; display:none;"></div>
         </div>
 
         <div class="block">
@@ -106,7 +107,7 @@
             <textarea id="ipaBox" class="smallbox" readonly>(IPA will appear here)</textarea>
         </div>
 
-        <div class="block" style="height:100%; display:grid; grid-template-rows:auto 1fr;">
+        <div class="block" style="height:100%; display:grid; grid-template-rows:auto 1fr auto;">
             <div class="label">Target Rhythm &amp; Intonation</div>
             <div id="rhythmBox"></div>
             <div class="hint">Content words are UPPERCASE (bold). Yes/No questions end with ↗; others with ↘.</div>
@@ -116,7 +117,7 @@
 
 <script>
     (() => {
-        // --- Elements
+        // Elements
         const btnRecord   = document.getElementById('btnRecord');
         const btnPlayback = document.getElementById('btnPlayback');
         const btnClear    = document.getElementById('btnClear');
@@ -124,62 +125,81 @@
         const statusEl    = document.getElementById('status');
         const gaugeFill   = document.getElementById('gaugeFill');
         const gaugeVal    = document.getElementById('gaugeVal');
+        const confWarn    = document.getElementById('confWarn');
+        const confidenceBadge = document.getElementById('confidenceBadge');
         const ipaBox      = document.getElementById('ipaBox');
         const rhythmBox   = document.getElementById('rhythmBox');
 
-        // --- State
+        // Browser detection
+        function detectBrowser() {
+            let isEdge = false, isChrome = false, isSafari = false, isFirefox = false;
+            const uaData = navigator.userAgentData;
+            if (uaData && Array.isArray(uaData.brands)) {
+                const brands = uaData.brands.map(b => (b.brand || '').toLowerCase());
+                isEdge   = brands.some(b => b.includes('edge') || b.includes('microsoft edge'));
+                isChrome = !isEdge && brands.some(b => b.includes('chromium') || b.includes('chrome'));
+            } else {
+                const ua = navigator.userAgent;
+                isEdge   = /\sEdg\//.test(ua);
+                isChrome = !isEdge && /\sChrome\//.test(ua);
+                isSafari = /^((?!chrome|android).)*safari/i.test(ua);
+                isFirefox= /Firefox\//.test(ua);
+            }
+            if (!uaData) {
+                const ua = navigator.userAgent;
+                isSafari = isSafari || /^((?!chrome|android).)*safari/i.test(ua);
+                isFirefox= isFirefox || /Firefox\//.test(ua);
+            }
+            return { isChrome, isEdge, isSafari, isFirefox };
+        }
+        const BROWSER = detectBrowser();
+
+        // State
         let recognition = null;
         let collecting  = false;
         let collectedText = '';
         let bestConfidence = null;
-        let inactivityTimer = null;
+        let sawConfidenceField = false;
+        let recogStartMs = 0;
+        let recogEndMs = 0;
+        let totalSegments = 0;
+        let finalSegments = 0;
+
         const PAUSE_SECONDS = 2.5;
 
-        // --- Function words (lowercase)
+        // Function words
         const FUNCTION_WORDS = new Set(`
 a an the and but or so for nor of at by from with without within into onto to up down over under on in out as is am are was were be been being
 do does did have has had will would should could can may might must
 than then there here this that these those not no yes if also very just only maybe perhaps really about across after again against all almost already although always among around because before below between both each either enough ever every few fewer first former further who whom whose which what when where why how
 i me my mine myself you your yours yourself he him his himself she her hers herself it its itself we us our ours ourselves they them their theirs themselves
 `.trim().split(/\s+/));
-
         const AUX_STARTERS = new Set(['is','are','am','was','were','do','does','did','have','has','had','can','could','will','would','shall','should','may','might','must']);
 
-        // --- Minimal IPA helper (demo-grade)
-        const IPA_DICT = {
-            'the':'ðə', 'a':'ə', 'an':'æn', 'to':'tuː', 'of':'ʌv', 'and':'ænd',
-            'you':'juː', 'is':'ɪz', 'are':'ɑːr', 'i':'aɪ', 'it':'ɪt', 'this':'ðɪs',
-            'that':'ðæt', 'in':'ɪn', 'on':'ɒn', 'for':'fɔːr', 'with':'wɪð', 'have':'hæv',
-            'do':'duː', 'be':'biː', 'yes':'jɛs', 'no':'nəʊ'
-        };
+        // Minimal IPA helper
+        const IPA_DICT = { 'the':'ðə','a':'ə','an':'æn','to':'tuː','of':'ʌv','and':'ænd','you':'juː','is':'ɪz','are':'ɑːr','i':'aɪ','it':'ɪt','this':'ðɪs','that':'ðæt','in':'ɪn','on':'ɒn','for':'fɔːr','with':'wɪð','have':'hæv','do':'duː','be':'biː','yes':'jɛs','no':'nəʊ' };
         function toIPA(text) {
             const words = text.split(/(\b)/);
             return words.map(w => {
                 const lw = w.toLowerCase();
                 if (/^[a-z']+$/i.test(w)) {
                     if (IPA_DICT[lw]) return IPA_DICT[lw];
-                    // extremely naive fallback (demo): replace some digraphs
-                    return w
-                        .toLowerCase()
-                        .replace(/th/g, 'ð')
-                        .replace(/sh/g, 'ʃ')
-                        .replace(/ch/g, 'tʃ')
-                        .replace(/ph/g, 'f')
-                        .replace(/oo/g, 'uː')
-                        .replace(/ee/g, 'iː')
-                        .replace(/ar/g, 'ɑːr');
+                    return w.toLowerCase()
+                        .replace(/th/g,'ð').replace(/sh/g,'ʃ').replace(/ch/g,'tʃ')
+                        .replace(/ph/g,'f').replace(/oo/g,'uː').replace(/ee/g,'iː')
+                        .replace(/ar/g,'ɑːr');
                 }
                 return w;
             }).join('');
         }
 
-        // --- Sentence utilities
+        // Rhythm helpers
         function splitIntoSentences(text) {
             const parts = text.split(/([.?!])/);
             const out = [];
             for (let i=0; i<parts.length; i+=2) {
                 const core = (parts[i] || '').trim();
-                const end = parts[i+1] || '';
+                const end  = parts[i+1] || '';
                 const s = (core + end).trim();
                 if (s) out.push(s);
             }
@@ -196,31 +216,49 @@ i me my mine myself you your yours yourself he him his himself she her hers hers
             return tokens.map(tok => {
                 if (/^[A-Za-z']+$/.test(tok)) {
                     const lw = tok.toLowerCase();
-                    if (FUNCTION_WORDS.has(lw)) return lw;        // keep function words lowercase
-                    return tok.toUpperCase();                     // stress content words
+                    if (FUNCTION_WORDS.has(lw)) return lw;
+                    return tok.toUpperCase();
                 }
                 return tok;
             }).join('');
         }
 
-        // --- Gauge
-        function setConfidence(conf) {
+        // UI helpers
+        function setStatus(msg) { statusEl.textContent = msg; }
+
+        // Confidence gauge with optional note (e.g., "(estimated)")
+        function setConfidence(conf, opts = {}) {
+            const reason = opts.reason || null; // 'unsupported' | 'missing' | null
+            const note = opts.note || '';       // e.g., 'estimated'
+            confWarn.style.display = 'none';
+            confWarn.textContent = '';
+
             if (conf == null) {
                 gaugeFill.style.width = '0%';
                 gaugeFill.style.background = '#808080';
-                gaugeVal.textContent = 'N/A';
+                if (reason === 'unsupported') {
+                    gaugeVal.textContent = 'Confidence unavailable in this browser';
+                    confWarn.textContent = 'Your current browser does not expose confidence values. Use Chrome/Edge for best results.';
+                    confWarn.style.display = 'block';
+                } else if (reason === 'missing') {
+                    gaugeVal.textContent = 'Confidence not returned';
+                    confWarn.textContent = 'The speech service did not include a confidence score for this recording.';
+                    confWarn.style.display = 'block';
+                } else {
+                    gaugeVal.textContent = 'N/A';
+                }
                 return;
             }
+
             const pct = Math.max(0, Math.min(1, conf)) * 100;
             let color = 'var(--accent-bad)';
             if (pct >= 85) color = 'var(--accent-good)';
             else if (pct >= 65) color = 'var(--accent-warn)';
             gaugeFill.style.width = pct.toFixed(1) + '%';
             gaugeFill.style.background = color;
-            gaugeVal.textContent = pct.toFixed(1) + '%';
+            gaugeVal.textContent = pct.toFixed(1) + '%' + (note ? ` (${note})` : '');
         }
 
-        // --- Rhythm box rendering
         function renderRhythm(text) {
             rhythmBox.innerHTML = '';
             if (!text.trim()) { rhythmBox.textContent = '(no speech)'; return; }
@@ -231,8 +269,6 @@ i me my mine myself you your yours yourself he him his himself she her hers hers
                 const arrowSpan = document.createElement('span');
                 arrowSpan.className = yn ? 'arrow-rise' : 'arrow-fall';
                 arrowSpan.textContent = yn ? ' ↗' : ' ↘';
-
-                // Tokenize to tag content/function words
                 const line = document.createElement('div');
                 const tokens = stressed.match(/[A-Za-z']+|[^A-Za-z'\s]+|\s+/g) || [];
                 tokens.forEach(t => {
@@ -251,54 +287,104 @@ i me my mine myself you your yours yourself he him his himself she her hers hers
             });
         }
 
-        // --- Recording & Transcription via Web Speech API
-        function startRecognition() {
+        // Mic pre-warm (helps Edge permission oddities)
+        async function prewarmMic() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                for (const t of stream.getTracks()) t.stop();
+                return true;
+            } catch (e) {
+                setStatus('Microphone access denied. In Edge, allow mic for this site (Settings → Cookies and site permissions → Microphone).');
+                return false;
+            }
+        }
+
+        // --- Estimated confidence fallback (used when backend confidence is missing)
+        function estimateConfidence(text, durationMs, finalSegs, totalSegs) {
+            const words = (text.match(/[A-Za-z']+/g) || []);
+            const wordCount = words.length;
+            const minutes = Math.max(0.01, durationMs / 60000);
+            const wpm = wordCount / minutes;
+
+            // WPM score: triangle peak at 120 wpm, zero at 40 and 220
+            let wpmScore;
+            if (wpm <= 40 || wpm >= 220) wpmScore = 0;
+            else if (wpm <= 120) wpmScore = (wpm - 40) / (120 - 40);
+            else wpmScore = (220 - wpm) / (220 - 120);
+
+            // Stability: how many finals we got vs total segments
+            const stability = totalSegs > 0 ? (finalSegs / totalSegs) : 0;
+
+            // Length score: very short utterances get penalized
+            const lengthScore = wordCount >= 10 ? 1 : wordCount / 10;
+
+            // Punctuation presence bump
+            const punctScore = /[.?!]/.test(text) ? 0.1 : 0;
+
+            // Weighted blend (clamp to [0,1])
+            let score = 0.6 * wpmScore + 0.25 * stability + 0.15 * lengthScore + punctScore;
+            score = Math.max(0, Math.min(1, score));
+            return score;
+        }
+
+        // Start recognition
+        async function startRecognition() {
             const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
             if (!SR) {
                 setStatus('Your browser does not support the Web Speech API (try Chrome/Edge).');
+                setConfidence(null, { reason: 'unsupported' });
                 return;
             }
             if (collecting) return;
 
+            const ok = await prewarmMic();
+            if (!ok) return;
+
             recognition = new SR();
             recognition.lang = 'en-US';
-            recognition.interimResults = true;   // stream partials
-            recognition.continuous = true;       // keep audio stream alive
+            recognition.interimResults = true;
+            recognition.continuous = true;
+
             collectedText = '';
             bestConfidence = null;
+            sawConfidenceField = false;
+            totalSegments = 0;
+            finalSegments = 0;
             setConfidence(null);
             transcript.value = 'Listening… (pause for ~2.5s to stop)';
-
             setStatus('Listening…');
             collecting = true;
             btnRecord.disabled = true;
             btnPlayback.disabled = true;
 
+            const PAUSE_MS = PAUSE_SECONDS * 1000;
+            let inactivityTimer = null;
             const resetWatchdog = () => {
                 if (inactivityTimer) clearTimeout(inactivityTimer);
                 inactivityTimer = setTimeout(() => {
-                    // 2.5s of inactivity → stop
                     try { recognition.stop(); } catch {}
-                }, PAUSE_SECONDS * 1000);
+                }, PAUSE_MS);
             };
 
-            recognition.onstart = () => resetWatchdog();
-            recognition.onaudiostart = () => resetWatchdog();
-            recognition.onsoundstart = () => resetWatchdog();
-            recognition.onspeechstart = () => resetWatchdog();
+            recognition.onstart = () => { recogStartMs = Date.now(); resetWatchdog(); };
+            recognition.onaudiostart = resetWatchdog;
+            recognition.onsoundstart = resetWatchdog;
+            recognition.onspeechstart = resetWatchdog;
 
             recognition.onresult = (event) => {
                 resetWatchdog();
                 let interim = '';
                 for (let i = event.resultIndex; i < event.results.length; i++) {
                     const res = event.results[i];
-                    const txt = res[0].transcript;
+                    const alt = res[0];
+                    const txt = alt.transcript;
+                    totalSegments++;
                     if (res.isFinal) {
+                        finalSegments++;
                         collectedText += (collectedText ? ' ' : '') + txt.trim();
-                        const conf = typeof res[0].confidence === 'number' ? res[0].confidence : null;
-                        if (conf != null) {
-                            // keep the first available confidence (or max)
-                            bestConfidence = bestConfidence == null ? conf : Math.max(bestConfidence, conf);
+                        if (typeof alt.confidence === 'number') {
+                            sawConfidenceField = true;
+                            bestConfidence = bestConfidence == null ? alt.confidence : Math.max(bestConfidence, alt.confidence);
                         }
                     } else {
                         interim += txt;
@@ -308,60 +394,93 @@ i me my mine myself you your yours yourself he him his himself she her hers hers
             };
 
             recognition.onerror = (e) => {
-                setStatus('ASR error: ' + (e.error || e.message || e.toString()));
-                stopFinalize();
+                const err = e.error || e.message || String(e);
+                if (err === 'not-allowed') {
+                    setStatus('Microphone permission blocked. Allow mic in Edge site permissions and reload.');
+                } else if (err === 'no-speech') {
+                    setStatus('No speech detected. Try again (ensure your mic is selected in Edge).');
+                } else if (err === 'audio-capture') {
+                    setStatus('No microphone found. Check Edge settings.');
+                } else if (err === 'aborted') {
+                    setStatus('Listening aborted by the browser.');
+                } else {
+                    setStatus('ASR error: ' + err);
+                }
+                stopFinalize(true);
             };
 
-            recognition.onend = () => {
-                // If we ended not by explicit error, finalize normally
-                stopFinalize();
-            };
+            recognition.onend = () => { stopFinalize(false); };
 
-            try { recognition.start(); } catch (e) {
+            try {
+                recognition.start(); // must be invoked by user interaction
+            } catch (e) {
                 setStatus('Could not start recognition: ' + e);
                 collecting = false;
                 btnRecord.disabled = false;
             }
 
-            function stopFinalize() {
+            function stopFinalize(errored) {
                 if (!collecting) return;
                 collecting = false;
                 if (inactivityTimer) clearTimeout(inactivityTimer);
+                recogEndMs = Date.now();
 
-                transcript.value = collectedText || '(no speech)';
-                setStatus('Transcription complete.');
+                transcript.value = collectedText || (errored ? '(error)' : '(no speech)');
                 btnRecord.disabled = false;
                 btnPlayback.disabled = !collectedText;
 
-                // Update analysis
-                setConfidence(bestConfidence);
+                // Confidence handling
+                if (bestConfidence == null) {
+                    // Try an estimated confidence so Edge users still see a gauge
+                    const est = collectedText ? estimateConfidence(collectedText, Math.max(1, recogEndMs - recogStartMs), finalSegments, totalSegments) : 0;
+                    if (est > 0) {
+                        setConfidence(est, { note: 'estimated' });
+                        setStatus('Transcription complete. (Estimated confidence shown; backend did not provide confidence.)');
+                    } else {
+                        // Nothing reasonable to estimate
+                        if (BROWSER.isChrome || BROWSER.isEdge) {
+                            setConfidence(null, { reason: 'missing' });
+                            setStatus('Transcription complete. Confidence not returned for this utterance.');
+                        } else {
+                            setConfidence(null, { reason: 'unsupported' });
+                            setStatus('Transcription complete. Note: confidence is not provided by this browser.');
+                        }
+                    }
+                } else {
+                    setConfidence(bestConfidence);
+                    setStatus('Transcription complete.');
+                }
+
+                // Analysis updates
                 ipaBox.value = collectedText ? toIPA(collectedText) : '(IPA unavailable)';
                 renderRhythm(collectedText);
             }
         }
 
-        // --- Playback via speechSynthesis
+        // Playback
         function playback() {
             const txt = (transcript.value || '').trim();
             if (!txt) return;
             setStatus('Playing back slowly…');
             btnPlayback.disabled = true;
-
             const utt = new SpeechSynthesisUtterance(txt);
-            // Approximate ~140 wpm (browser units vary): 0.85 feels close in Chrome
-            utt.rate = 0.85;
+            utt.rate = 0.85; // ~140 wpm-ish
             utt.onend = () => { setStatus('Playback complete.'); btnPlayback.disabled = false; };
             utt.onerror = (e) => { setStatus('TTS error: ' + (e.error || e.message || e)); btnPlayback.disabled = false; };
-            window.speechSynthesis.cancel(); // fresh start each time
+            window.speechSynthesis.cancel();
             window.speechSynthesis.speak(utt);
         }
 
-        // --- Helpers
-        function setStatus(msg) { statusEl.textContent = msg; }
-
+        // Clear
         function clearAll() {
             collectedText = '';
             bestConfidence = null;
+            sawConfidenceField = false;
+            recogStartMs = 0;
+            recogEndMs = 0;
+            totalSegments = 0;
+            finalSegments = 0;
+
             transcript.value = '(cleared)';
             ipaBox.value = '(cleared)';
             rhythmBox.textContent = '(cleared)';
@@ -370,13 +489,18 @@ i me my mine myself you your yours yourself he him his himself she her hers hers
             btnPlayback.disabled = true;
         }
 
-        // --- Wire up
+        // Wire up
         btnRecord.addEventListener('click', startRecognition);
         btnPlayback.addEventListener('click', playback);
         btnClear.addEventListener('click', clearAll);
 
-        // Initial render
+        // Passive hint for non-Chromium browsers
         setConfidence(null);
+        if (!(BROWSER.isChrome || BROWSER.isEdge)) {
+            confidenceBadge.textContent = 'confidence not provided in this browser';
+            setConfidence(null, { reason: 'unsupported' });
+            setStatus('Tip: Confidence scores are only reliable in Chrome/Edge. Other browsers may not provide them.');
+        }
     })();
 </script>
 </body>
